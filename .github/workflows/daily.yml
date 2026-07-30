@@ -1,4 +1,4 @@
-name: Daily SkillRadar Run
+name: Daily SkillRadar Run # trigger workflow re-scan
 
 on:
   schedule:
