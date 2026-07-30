@@ -27,6 +27,7 @@ public sealed class GitHubDiscoverySource : IDiscoverySource
     public async Task<IReadOnlyList<RepoInfo>> DiscoverRepositoriesAsync(CancellationToken cancellationToken = default)
     {
         var byFullName = new Dictionary<string, RepoInfo>(StringComparer.OrdinalIgnoreCase);
+        var seedFullNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var topic in _options.Topics)
         {
@@ -52,18 +53,23 @@ public sealed class GitHubDiscoverySource : IDiscoverySource
         foreach (var seed in _options.SeedRepos)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (byFullName.ContainsKey(seed))
-            {
-                continue;
-            }
 
             try
             {
-                var repo = await _client.GetRepositoryAsync(seed, cancellationToken);
-                if (repo is not null)
+                var repo = byFullName.TryGetValue(seed, out var existing) ? existing : null;
+                if (repo is null)
                 {
-                    byFullName[repo.FullName] = ToRepoInfo(repo);
+                    var dto = await _client.GetRepositoryAsync(seed, cancellationToken);
+                    if (dto is null)
+                    {
+                        continue;
+                    }
+
+                    repo = ToRepoInfo(dto);
+                    byFullName[repo.FullName] = repo;
                 }
+
+                seedFullNames.Add(repo.FullName);
             }
             catch (Exception ex)
             {
@@ -71,7 +77,46 @@ public sealed class GitHubDiscoverySource : IDiscoverySource
             }
         }
 
-        return byFullName.Values.ToList();
+        var candidateCount = byFullName.Count;
+        var selected = ApplyMaxRepos(byFullName.Values, seedFullNames);
+
+        if (selected.Count < candidateCount)
+        {
+            _logger.LogInformation(
+                "本次處理 {Selected} / 候選 {Candidates} 個 repo（受 MaxRepos={MaxRepos} 上限，依熱度取高分優先，SeedRepos 保底納入）",
+                selected.Count, candidateCount, _options.MaxRepos);
+        }
+        else
+        {
+            _logger.LogInformation("本次處理 {Selected} / 候選 {Candidates} 個 repo（未達 MaxRepos={MaxRepos} 上限）",
+                selected.Count, candidateCount, _options.MaxRepos);
+        }
+
+        return selected;
+    }
+
+    /// <summary>
+    /// Caps the candidate set to MaxRepos. SeedRepos are always kept (they were explicitly configured);
+    /// the remaining budget is filled by the highest-heat (stars desc, then most recently pushed) of
+    /// the rest — never a random/arbitrary cut.
+    /// </summary>
+    private List<RepoInfo> ApplyMaxRepos(IEnumerable<RepoInfo> candidates, HashSet<string> seedFullNames)
+    {
+        var guaranteed = new List<RepoInfo>();
+        var rest = new List<RepoInfo>();
+
+        foreach (var repo in candidates)
+        {
+            (seedFullNames.Contains(repo.FullName) ? guaranteed : rest).Add(repo);
+        }
+
+        var budget = Math.Max(0, _options.MaxRepos - guaranteed.Count);
+        var topRest = rest
+            .OrderByDescending(r => r.Stars)
+            .ThenByDescending(r => r.PushedAtUtc)
+            .Take(budget);
+
+        return guaranteed.Concat(topRest).ToList();
     }
 
     private static RepoInfo ToRepoInfo(RepoDto repo) => new()

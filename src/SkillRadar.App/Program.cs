@@ -2,6 +2,7 @@ using System.Net;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Http.Resilience;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Polly;
@@ -41,19 +42,31 @@ builder.Services.AddDbContext<SkillRadarDbContext>((sp, options) =>
 
 builder.Services
     .AddHttpClient<GitHubApiClient>()
-    .AddStandardResilienceHandler(options =>
+    // Custom pipeline (retry + timeout only) instead of AddStandardResilienceHandler: the standard
+    // handler also adds a circuit breaker, and that state is shared across every concurrent request
+    // on this HttpClient. With GitHubHarvester now running MaxConcurrency repos in flight, a shared
+    // breaker would let one repo's cluster of secondary-rate-limit 403s trip a fail-fast state that
+    // then also hits every *other* concurrent repo's requests — exactly the "one repo's backoff
+    // shouldn't stall the whole batch" failure mode this needs to avoid. Retry and Timeout below are
+    // both scoped to a single request's own execution, so they stay isolated per-repo/per-file.
+    .AddResilienceHandler("github", pipeline =>
     {
-        // GitHub signals both the primary rate limit (403) and secondary/abuse limits (403 or 429)
-        // the same way a normal server error would be retried; the standard predicate only covers
-        // 5xx/408/429 by default, so we widen it to include 403 as well.
-        options.Retry.ShouldHandle = args => ValueTask.FromResult(
-            args.Outcome.Exception is not null ||
-            args.Outcome.Result?.StatusCode is HttpStatusCode.Forbidden
-                or HttpStatusCode.TooManyRequests
-                or >= HttpStatusCode.InternalServerError);
-        options.Retry.MaxRetryAttempts = 5;
-        options.Retry.BackoffType = DelayBackoffType.Exponential;
-        options.Retry.UseJitter = true;
+        pipeline.AddTimeout(TimeSpan.FromSeconds(30)); // overall budget for one call, across all its retries
+        pipeline.AddRetry(new HttpRetryStrategyOptions
+        {
+            // GitHub signals both the primary rate limit (403) and secondary/abuse limits (403 or
+            // 429) the same way a normal server error would be retried; the default predicate only
+            // covers 5xx/408/429, so we widen it to include 403 as well.
+            ShouldHandle = args => ValueTask.FromResult(
+                args.Outcome.Exception is not null ||
+                args.Outcome.Result?.StatusCode is HttpStatusCode.Forbidden
+                    or HttpStatusCode.TooManyRequests
+                    or >= HttpStatusCode.InternalServerError),
+            MaxRetryAttempts = 5,
+            BackoffType = DelayBackoffType.Exponential,
+            UseJitter = true,
+        });
+        pipeline.AddTimeout(TimeSpan.FromSeconds(10)); // per-attempt budget so one hung attempt can't eat the whole 30s
     });
 
 builder.Services.AddScoped<IDiscoverySource, GitHubDiscoverySource>();
