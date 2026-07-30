@@ -1,0 +1,13 @@
+bin/
+obj/
+*.user
+.vs/
+
+# Secrets: never commit these. Local dev secrets belong in `dotnet user-secrets`, not in a file.
+.env
+.env.*
+*.local.json
+appsettings.*.local.json
+
+# state/skills.db (SQLite state store) and reports/ are intentionally NOT ignored — the daily
+# workflow commits both back so incremental diffing survives across stateless CI runs.

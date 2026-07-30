@@ -1,0 +1,58 @@
+name: Daily SkillRadar Run
+
+on:
+  schedule:
+    # 09:00 UTC daily (17:00 Asia/Taipei)
+    - cron: "0 9 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+# Serialize runs so two overlapping executions never race to commit/push state/skills.db and
+# reports/ at the same time. Queue (don't cancel) so a manually-dispatched run never clobbers
+# a scheduled one that's mid-flight.
+concurrency:
+  group: skillradar-daily
+  cancel-in-progress: false
+
+jobs:
+  run-skillradar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore
+        run: dotnet restore SkillRadar.sln
+
+      - name: Build
+        run: dotnet build SkillRadar.sln --no-restore --configuration Release
+
+      - name: Run SkillRadar pipeline
+        env:
+          # The built-in token is enough for public read-only Search/Trees/Contents calls at the
+          # authenticated rate limit. Swap for a PAT repo secret if you need higher limits.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Run from the repo root (not the project dir) so the relative "reports/" and "state/"
+        # paths in appsettings.json land at the repo root, where this workflow commits them from.
+        # Checkout above already restored the previously-committed state/skills.db, so this run's
+        # diff picks up where yesterday's left off instead of treating everything as new.
+        run: dotnet run --project src/SkillRadar.App --no-build --configuration Release
+
+      - name: Commit generated report + state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add reports/ state/ || true
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore: daily SkillRadar digest $(date -u +%Y-%m-%d)"
+            git push
+          fi
