@@ -88,6 +88,15 @@ try
 
     var runner = scope.ServiceProvider.GetRequiredService<PipelineRunner>();
     var exitCode = await runner.RunAsync();
+
+    // Microsoft.Data.Sqlite pools connections by default: DbContext.Dispose() returns the native
+    // handle to the pool instead of calling sqlite3_close(), so SQLite's own "checkpoint on last
+    // connection close" never fires, and the process exiting just abruptly drops the file handle.
+    // Without this, committed state/skills.db can silently stay stale — a small day's diff might
+    // never cross SQLite's size-based auto-checkpoint threshold either — while the real data sits
+    // in state/skills.db-wal, which is (correctly) gitignored and never makes it into the commit.
+    await db.Database.ExecuteSqlRawAsync("PRAGMA wal_checkpoint(TRUNCATE);");
+
     return exitCode;
 }
 finally
