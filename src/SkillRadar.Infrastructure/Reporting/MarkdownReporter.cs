@@ -70,7 +70,7 @@ public sealed class MarkdownReporter : IReporter
 
         foreach (var scored in newSkills)
         {
-            AppendSkillLine(sb, scored);
+            AppendSkillLine(sb, scored, "- ");
         }
 
         sb.AppendLine();
@@ -91,8 +91,7 @@ public sealed class MarkdownReporter : IReporter
         var rank = 1;
         foreach (var scored in topSkills)
         {
-            sb.Append($"{rank}. ");
-            AppendSkillLine(sb, scored, includeStatusTag: true);
+            AppendSkillLine(sb, scored, $"{rank}. ", includeStatusTag: true);
             rank++;
         }
 
@@ -107,13 +106,13 @@ public sealed class MarkdownReporter : IReporter
         sb.AppendLine();
     }
 
-    private static void AppendSkillLine(StringBuilder sb, ScoredSkill scored, bool includeStatusTag = false)
+    private static void AppendSkillLine(StringBuilder sb, ScoredSkill scored, string prefix, bool includeStatusTag = false)
     {
         var skill = scored.Skill;
         var tag = includeStatusTag ? StatusTag(scored.Status) : string.Empty;
 
         sb.AppendLine(
-            $"- **[{skill.Name}]({skill.HtmlUrl})**{tag} — {skill.Description} " +
+            $"{prefix}**[{skill.Name}]({skill.HtmlUrl})**{tag} — {skill.Description} " +
             $"_(★{skill.RepoStars} · `{skill.RepoFullName}` · score {scored.Score:F2})_");
     }
 
