@@ -11,3 +11,8 @@ appsettings.*.local.json
 
 # state/skills.db (SQLite state store) and reports/ are intentionally NOT ignored — the daily
 # workflow commits both back so incremental diffing survives across stateless CI runs.
+
+# SQLite WAL-mode sidecar files: transient, checkpointed back into state/skills.db on clean
+# shutdown and regenerated on next open — never meaningful to commit, unlike the .db itself.
+state/*.db-shm
+state/*.db-wal
